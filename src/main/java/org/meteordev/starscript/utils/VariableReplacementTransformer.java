@@ -15,7 +15,6 @@ import java.util.function.Supplier;
  */
 public class VariableReplacementTransformer extends AbstractExprVisitor {
     private final Map<String, Supplier<String>> replacers = new HashMap<>();
-    private final StringBuilder sb = new StringBuilder();
 
     public void addReplacer(String name, Supplier<String> supplier) {
         replacers.put(name, supplier);
@@ -44,37 +43,21 @@ public class VariableReplacementTransformer extends AbstractExprVisitor {
         String[] parts = replacement.split("\\.");
         if (parts.length == 0) throw new IllegalStateException("Cannot replace with an empty replacement");
 
-        Expr expr = null;
-
-        for (int i = 0; i < parts.length; i++) {
-            if (i == 0) expr = new Expr.Variable(0, 0, parts[i]);
-            else expr = new Expr.Get(0, 0, expr, parts[i]);
-        }
+        Expr expr = new Expr.Variable(0, 0, parts[0]);
+        for (int i = 1; i < parts.length; i++) expr = new Expr.Get(0, 0, expr, parts[i]);
 
         return expr;
     }
 
+    /** Returns the dotted name of a chain of gets on a variable, or null if the chain starts with anything else. */
     private String getFullName(Expr.Get expr) {
-        try {
-            getFullNameImpl(expr);
-        }
-        catch (IllegalStateException ignored) {
-            sb.setLength(0);
-            return null;
-        }
-
-        String name = sb.toString();
-        sb.setLength(0);
-
-        return name;
-    }
-
-    private void getFullNameImpl(Expr.Get expr) {
-        if (expr.getObject() instanceof Expr.Get) getFullNameImpl((Expr.Get) expr.getObject());
-        else if (expr.getObject() instanceof Expr.Variable) sb.append(((Expr.Variable) expr.getObject()).name);
-        else throw new IllegalStateException();
-
-        sb.append('.');
-        sb.append(expr.name);
+        return switch (expr.getObject()) {
+            case Expr.Variable variable -> variable.name + "." + expr.name;
+            case Expr.Get get -> {
+                String parent = getFullName(get);
+                yield parent == null ? null : parent + "." + expr.name;
+            }
+            default -> null;
+        };
     }
 }

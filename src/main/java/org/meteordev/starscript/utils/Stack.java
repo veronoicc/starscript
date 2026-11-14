@@ -10,6 +10,12 @@ public class Stack<T> {
         size = 0;
     }
 
+    /** Drops values until only {@code newSize} remain. Does nothing if the stack is already that small. */
+    public void truncate(int newSize) {
+        for (int i = newSize; i < size; i++) items[i] = null;
+        if (newSize < size) size = newSize;
+    }
+
     @SuppressWarnings("unchecked")
     public void push(T item) {
         if (size >= items.length) {

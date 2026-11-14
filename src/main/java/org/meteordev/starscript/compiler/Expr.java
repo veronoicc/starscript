@@ -1,6 +1,7 @@
 package org.meteordev.starscript.compiler;
 
 import java.util.List;
+import java.util.stream.Stream;
 
 /** Expressions that form the AST (abstract syntax tree) of parsed starscript code. */
 public abstract class Expr {
@@ -131,8 +132,7 @@ public abstract class Expr {
         }
 
         public Expr getExpr() {
-            if (children.length == 0) return null;
-            return children[0];
+            return children.length == 0 ? null : children[0];
         }
     }
 
@@ -250,12 +250,7 @@ public abstract class Expr {
         }
 
         private static Expr[] combine(Expr callee, List<Expr> args) {
-            Expr[] exprs = new Expr[args.size() + 1];
-
-            exprs[0] = callee;
-            for (int i = 0; i < args.size(); i++) exprs[i + 1] = args.get(i);
-
-            return exprs;
+            return Stream.concat(Stream.of(callee), args.stream()).toArray(Expr[]::new);
         }
     }
 

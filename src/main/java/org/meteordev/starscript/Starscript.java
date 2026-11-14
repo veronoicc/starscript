@@ -7,10 +7,13 @@ import org.meteordev.starscript.utils.*;
 import org.meteordev.starscript.value.Value;
 import org.meteordev.starscript.value.ValueMap;
 
+import lombok.Getter;
+
 import java.util.function.Supplier;
 
 /** A VM (virtual machine) that can run compiled starscript code, {@link Script}. */
 public class Starscript {
+    @Getter
     private final ValueMap globals;
 
     private final Stack<Value> stack = new Stack<>();
@@ -19,14 +22,25 @@ public class Starscript {
         globals = new ValueMap();
     }
 
-    /** Creates a new Starscript instance with shared globals ({@link #getGlobals()}) from the parent instance. */
+    /** Creates a new Starscript instance that shares the globals ({@code getGlobals()}) of the parent instance. */
     public Starscript(Starscript parent) {
         globals = parent.globals;
     }
 
     /** Runs the script and fills the provided {@link StringBuilder}. Throws {@link StarscriptError} if a runtime error happens. */
     public Section run(Script script, StringBuilder sb) {
-        stack.clear();
+        int base = stack.size();
+
+        try {
+            return execute(script, sb);
+        }
+        finally {
+            stack.truncate(base);
+        }
+    }
+
+    private Section execute(Script script, StringBuilder sb) {
+        byte[] code = script.code;
 
         sb.setLength(0);
         int ip = 0;
@@ -37,81 +51,125 @@ public class Starscript {
 
         loop:
         while (true) {
-            switch (Instruction.valueOf(script.code[ip++])) {
-                case Constant:          push(script.constants.get(script.code[ip++] & 0xFF)); break;
-                case Null:              push(Value.null_()); break;
-                case True:              push(Value.bool(true)); break;
-                case False:             push(Value.bool(false)); break;
+            Instruction insn = Instruction.valueOf(code[ip++]);
 
-                case Add:               { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(a.getNumber() + b.getNumber())); else if (a.isString()) push(Value.string(a.getString() + b.toString())); else error("Can only add 2 numbers or 1 string and other value."); break; }
-                case Subtract:          { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(a.getNumber() - b.getNumber())); else error("Can only subtract 2 numbers."); break; }
-                case Multiply:          { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(a.getNumber() * b.getNumber())); else error("Can only multiply 2 numbers."); break; }
-                case Divide:            { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(a.getNumber() / b.getNumber())); else error("Can only divide 2 numbers."); break; }
-                case Modulo:            { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(a.getNumber() % b.getNumber())); else error("Can only modulo 2 numbers."); break; }
-                case Power:             { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(Math.pow(a.getNumber(), b.getNumber()))); else error("Can only power 2 numbers."); break; }
+            switch (insn) {
+                case Constant -> { push(script.constants.get(readU16(code, ip))); ip += 2; }
+                case Null -> push(Value.null_());
+                case True -> push(Value.bool(true));
+                case False -> push(Value.bool(false));
 
-                case BitwiseAnd:        { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() & (long) b.getNumber())); else error("This operation requires 2 numbers."); break; }
-                case BitwiseOr:         { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() | (long) b.getNumber())); else error("This operation requires 2 numbers."); break; }
-                case BitwiseXor:        { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() ^ (long) b.getNumber())); else error("This operation requires 2 numbers."); break; }
-                case LeftShift:         { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() << (long) b.getNumber())); else error("This operation requires 2 numbers."); break; }
-                case RightShift:        { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() >> (long) b.getNumber())); else error("This operation requires 2 numbers."); break; }
-                case UnsignedRightShift: { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() >>> (long) b.getNumber())); else error("This operation requires 2 numbers."); break; }
+                case Add -> { Value b = pop(); Value a = pop(); push(add(a, b)); }
+                case Subtract -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(a.getNumber() - b.getNumber())); else error("Can only subtract 2 numbers."); }
+                case Multiply -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(a.getNumber() * b.getNumber())); else error("Can only multiply 2 numbers."); }
+                case Divide -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(a.getNumber() / b.getNumber())); else error("Can only divide 2 numbers."); }
+                case Modulo -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(a.getNumber() % b.getNumber())); else error("Can only modulo 2 numbers."); }
+                case Power -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(Math.pow(a.getNumber(), b.getNumber()))); else error("Can only power 2 numbers."); }
 
-                case AddConstant:       { Value b = script.constants.get(script.code[ip++] & 0xFF); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number(a.getNumber() + b.getNumber())); else if (a.isString()) push(Value.string(a.getString() + b.toString())); else error("Can only add 2 numbers or 1 string and other value."); break; }
+                case BitwiseAnd -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() & (long) b.getNumber())); else error("This operation requires 2 numbers."); }
+                case BitwiseOr -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() | (long) b.getNumber())); else error("This operation requires 2 numbers."); }
+                case BitwiseXor -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() ^ (long) b.getNumber())); else error("This operation requires 2 numbers."); }
+                case LeftShift -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() << (long) b.getNumber())); else error("This operation requires 2 numbers."); }
+                case RightShift -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() >> (long) b.getNumber())); else error("This operation requires 2 numbers."); }
+                case UnsignedRightShift -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.number((long) a.getNumber() >>> (long) b.getNumber())); else error("This operation requires 2 numbers."); }
 
-                case Pop:               pop(); break;
-                case Not:               push(Value.bool(!pop().isTruthy())); break;
-                case Negate:            { Value a = pop(); if (a.isNumber()) push(Value.number(-a.getNumber())); else error("This operation requires a number."); break; }
-                case BitwiseNot:        { Value a = pop(); if (a.isNumber()) push(Value.number(~((long) a.getNumber()))); else error("This operation requires a number."); break; }
+                case AddConstant -> { Value b = script.constants.get(readU16(code, ip)); ip += 2; Value a = pop(); push(add(a, b)); }
 
-                case Equals:            push(Value.bool(pop().equals(pop()))); break;
-                case NotEquals:         push(Value.bool(!pop().equals(pop()))); break;
-                case Greater:           { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.bool(a.getNumber() > b.getNumber())); else error("This operation requires 2 numbers."); break; }
-                case GreaterEqual:      { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.bool(a.getNumber() >= b.getNumber())); else error("This operation requires 2 numbers."); break; }
-                case Less:              { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.bool(a.getNumber() < b.getNumber())); else error("This operation requires 2 numbers."); break; }
-                case LessEqual:         { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.bool(a.getNumber() <= b.getNumber())); else error("This operation requires 2 numbers."); break; }
+                case Pop -> pop();
+                case Not -> push(Value.bool(!pop().isTruthy()));
+                case Negate -> { Value a = pop(); if (a.isNumber()) push(Value.number(-a.getNumber())); else error("This operation requires a number."); }
+                case BitwiseNot -> { Value a = pop(); if (a.isNumber()) push(Value.number(~((long) a.getNumber()))); else error("This operation requires a number."); }
 
-                case Variable:          { String name = script.constants.get(script.code[ip++] & 0xFF).getString(); Supplier<Value> s = globals.getRaw(name); push(s != null ? s.get() : Value.null_()); break; }
-                case Get:               { String name = script.constants.get(script.code[ip++] & 0xFF).getString(); Value v = pop(); if (!v.isMap()) { push(Value.null_()); break; } Supplier<Value> s = v.getMap().getRaw(name); push(s != null ? s.get() : Value.null_()); break; }
-                case Call:              { int argCount = script.code[ip++]; Value a = peek(argCount); if (a.isFunction()) { Value r = a.getFunction().run(this, argCount); pop(); push(r); } else error("Tried to call a %s, can only call functions.", a.type); break; }
+                case Equals -> push(Value.bool(pop().equals(pop())));
+                case NotEquals -> push(Value.bool(!pop().equals(pop())));
+                case Greater -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.bool(a.getNumber() > b.getNumber())); else error("This operation requires 2 numbers."); }
+                case GreaterEqual -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.bool(a.getNumber() >= b.getNumber())); else error("This operation requires 2 numbers."); }
+                case Less -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.bool(a.getNumber() < b.getNumber())); else error("This operation requires 2 numbers."); }
+                case LessEqual -> { Value b = pop(); Value a = pop(); if (a.isNumber() && b.isNumber()) push(Value.bool(a.getNumber() <= b.getNumber())); else error("This operation requires 2 numbers."); }
 
-                case Jump:              { int jump = ((script.code[ip++] & 0xFF) << 8) | (script.code[ip++] & 0xFF); ip += jump; break; }
-                case JumpIfTrue:        { int jump = ((script.code[ip++] & 0xFF) << 8) | (script.code[ip++] & 0xFF); if (peek().isTruthy()) ip += jump; break; }
-                case JumpIfFalse:       { int jump = ((script.code[ip++] & 0xFF) << 8) | (script.code[ip++] & 0xFF); if (!peek().isTruthy()) ip += jump; break; }
+                case Variable -> { push(variable(script, readU16(code, ip))); ip += 2; }
+                case Get -> { push(field(pop(), script, readU16(code, ip))); ip += 2; }
+                case Call -> { call(code[ip++] & 0xFF, sb, false); }
 
-                case Section:           if (firstSection == null) { firstSection = new Section(index, sb.toString()); section = firstSection; } else { section.next = new Section(index, sb.toString()); section = section.next; } sb.setLength(0); index = script.code[ip++]; break;
+                case Jump -> ip += 2 + readU16(code, ip);
+                case JumpIfTrue -> ip += peek().isTruthy() ? 2 + readU16(code, ip) : 2;
+                case JumpIfFalse -> ip += !peek().isTruthy() ? 2 + readU16(code, ip) : 2;
 
-                case Append:            sb.append(pop().toString()); break;
-                case ConstantAppend:    sb.append(script.constants.get(script.code[ip++] & 0xFF).toString()); break;
-                case VariableAppend:    { Supplier<Value> s = globals.getRaw(script.constants.get(script.code[ip++] & 0xFF).getString()); sb.append((s == null ? Value.null_() : s.get()).toString()); break; }
-                case GetAppend:         { String name = script.constants.get(script.code[ip++] & 0xFF).getString(); Value v = pop(); if (!v.isMap()) { sb.append(Value.null_()); break; } Supplier<Value> s = v.getMap().getRaw(name); sb.append((s != null ? s.get() : Value.null_()).toString()); break; }
-                case CallAppend:        { int argCount = script.code[ip++]; Value a = peek(argCount); if (a.isFunction()) { Value r = a.getFunction().run(this, argCount); pop(); sb.append(r.toString()); } else error("Tried to call a %s, can only call functions.", a.type); break; }
+                case Section -> {
+                    Section next = new Section(index, sb.toString());
+                    if (firstSection == null) firstSection = next;
+                    else section.next = next;
+                    section = next;
 
-                case VariableGet:       {
-                    Value v;
-                    { String name = script.constants.get(script.code[ip++] & 0xFF).getString(); Supplier<Value> s = globals.getRaw(name); v = s != null ? s.get() : Value.null_(); } // Variable
-                    { String name = script.constants.get(script.code[ip++] & 0xFF).getString(); if (!v.isMap()) { push(Value.null_()); break; } Supplier<Value> s = v.getMap().getRaw(name); push(s != null ? s.get() : Value.null_()); } // Get
-                    break;
-                }
-                case VariableGetAppend: {
-                    Value v;
-                    { String name = script.constants.get(script.code[ip++] & 0xFF).getString(); Supplier<Value> s = globals.getRaw(name); v = s != null ? s.get() : Value.null_(); } // Variable
-                    { String name = script.constants.get(script.code[ip++] & 0xFF).getString(); if (!v.isMap()) { push(Value.null_()); break; } Supplier<Value> s = v.getMap().getRaw(name); v = s != null ? s.get() : Value.null_(); } // Get
-                    { sb.append(v.toString()); } // Append
-                    break;
+                    sb.setLength(0);
+                    index = code[ip++] & 0xFF;
                 }
 
-                case End:               break loop;
-                default:                throw new UnsupportedOperationException("Unknown instruction '" + Instruction.valueOf(script.code[ip]) + "'");
+                case Append -> sb.append(pop().toString());
+                case ConstantAppend -> { sb.append(script.constants.get(readU16(code, ip)).toString()); ip += 2; }
+                case VariableAppend -> { sb.append(variable(script, readU16(code, ip)).toString()); ip += 2; }
+                case GetAppend -> { sb.append(field(pop(), script, readU16(code, ip)).toString()); ip += 2; }
+                case CallAppend -> call(code[ip++] & 0xFF, sb, true);
+
+                case VariableGet -> {
+                    push(field(variable(script, readU16(code, ip)), script, readU16(code, ip + 2)));
+                    ip += 4;
+                }
+                case VariableGetAppend -> {
+                    sb.append(field(variable(script, readU16(code, ip)), script, readU16(code, ip + 2)).toString());
+                    ip += 4;
+                }
+
+                case End -> { break loop; }
+                default -> throw new UnsupportedOperationException("Unknown instruction '" + insn + "'");
             }
         }
 
-        if (firstSection != null) {
+        if (section != null) {
             section.next = new Section(index, sb.toString());
             return firstSection;
         }
 
         return new Section(index, sb.toString());
+    }
+
+    private static int readU16(byte[] code, int ip) {
+        return ((code[ip] & 0xFF) << 8) | (code[ip + 1] & 0xFF);
+    }
+
+    private Value add(Value a, Value b) {
+        if (a.isNumber() && b.isNumber()) return Value.number(a.getNumber() + b.getNumber());
+        if (a.isString()) return Value.string(a.getString() + b);
+
+        error("Can only add 2 numbers or 1 string and other value.");
+        return null;
+    }
+
+    private Value variable(Script script, int constant) {
+        Supplier<Value> s = globals.getRaw(script.constants.get(constant).getString());
+        return s != null ? s.get() : Value.null_();
+    }
+
+    private Value field(Value v, Script script, int constant) {
+        if (!v.isMap()) return Value.null_();
+
+        Supplier<Value> s = v.getMap().getRaw(script.constants.get(constant).getString());
+        return s != null ? s.get() : Value.null_();
+    }
+
+    /** Calls the function below {@code argCount} arguments, then drops the arguments and callee and pushes or appends the result. */
+    private void call(int argCount, StringBuilder sb, boolean append) {
+        Value callee = peek(argCount);
+        if (!callee.isFunction()) error("Tried to call a %s, can only call functions.", callee.type());
+
+        int base = stack.size() - argCount - 1;
+        Value result = callee.getFunction().run(this, argCount);
+
+        if (stack.size() <= base) error("Function popped too many values.");
+        stack.truncate(base);
+
+        if (append) sb.append(result.toString());
+        else push(result);
     }
 
     /** Runs the script. Throws {@link StarscriptError} if a runtime error happens. */
@@ -173,9 +231,9 @@ public class Starscript {
 
     // Helpers
 
-    /** Throws a {@link StarscriptError}. */
+    /** Throws a {@link StarscriptError}. Without arguments the message is used verbatim, otherwise it is a {@link String#format} pattern. */
     public void error(String format, Object... args) {
-        throw new StarscriptError(String.format(format, args));
+        throw new StarscriptError(args.length == 0 ? format : String.format(format, args));
     }
 
     // Globals
@@ -230,11 +288,6 @@ public class Starscript {
         return globals.remove(name);
     }
 
-    /** Returns the underlying {@link ValueMap} for global variables. */
-    public ValueMap getGlobals() {
-        return globals;
-    }
-
     // Completions
 
     /** Calls the provided callback for every completion that is able to be resolved from global variables. */
@@ -253,17 +306,14 @@ public class Starscript {
     private void completionsExpr(String source, int position, Expr expr, CompletionCallback callback) {
         if (position < expr.start || (position > expr.end && position != source.length())) return;
 
-        if (expr instanceof Expr.Variable) {
-            Expr.Variable var = (Expr.Variable) expr;
+        if (expr instanceof Expr.Variable var) {
             String start = source.substring(var.start, position);
 
             for (String key : globals.keys()) {
                 if (!key.startsWith("_") && key.startsWith(start)) callback.onCompletion(key, globals.getRaw(key).get().isFunction());
             }
         }
-        else if (expr instanceof Expr.Get) {
-            Expr.Get get = (Expr.Get) expr;
-
+        else if (expr instanceof Expr.Get get) {
             if (position >= get.end - get.name.length()) {
                 Value value = resolveExpr(get.getObject());
 
@@ -279,14 +329,9 @@ public class Starscript {
                 for (Expr child : expr.children) completionsExpr(source, position, child, callback);
             }
         }
-        else if (expr instanceof Expr.Block) {
-            if (((Expr.Block) expr).getExpr() == null) {
-                for (String key : globals.keys()) {
-                    if (!key.startsWith("_")) callback.onCompletion(key, globals.getRaw(key).get().isFunction());
-                }
-            }
-            else {
-                for (Expr child : expr.children) completionsExpr(source, position, child, callback);
+        else if (expr instanceof Expr.Block block && block.getExpr() == null) {
+            for (String key : globals.keys()) {
+                if (!key.startsWith("_")) callback.onCompletion(key, globals.getRaw(key).get().isFunction());
             }
         }
         else {
@@ -295,18 +340,19 @@ public class Starscript {
     }
 
     private Value resolveExpr(Expr expr) {
-        if (expr instanceof Expr.Variable) {
-            Supplier<Value> supplier = globals.getRaw(((Expr.Variable) expr).name);
-            return supplier != null ? supplier.get() : null;
-        }
-        else if (expr instanceof Expr.Get) {
-            Value value = resolveExpr(((Expr.Get) expr).getObject());
-            if (value == null || !value.isMap()) return null;
+        return switch (expr) {
+            case Expr.Variable var -> {
+                Supplier<Value> supplier = globals.getRaw(var.name);
+                yield supplier != null ? supplier.get() : null;
+            }
+            case Expr.Get get -> {
+                Value value = resolveExpr(get.getObject());
+                if (value == null || !value.isMap()) yield null;
 
-            Supplier<Value> supplier = value.getMap().getRaw(((Expr.Get) expr).name);
-            return supplier != null ? supplier.get() : null;
-        }
-
-        return null;
+                Supplier<Value> supplier = value.getMap().getRaw(get.name);
+                yield supplier != null ? supplier.get() : null;
+            }
+            default -> null;
+        };
     }
 }

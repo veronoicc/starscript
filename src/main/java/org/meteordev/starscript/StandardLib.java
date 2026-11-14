@@ -2,23 +2,24 @@ package org.meteordev.starscript;
 
 import org.meteordev.starscript.value.Value;
 
-import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Random;
 
 /** Standard library with some default functions and variables. */
 public class StandardLib {
     private static final Random rand = new Random();
 
-    public static final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm");
-    public static final SimpleDateFormat dateFormat = new SimpleDateFormat("dd. MM. yyyy");
+    private static final DateTimeFormatter TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm");
+    private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("dd. MM. yyyy");
 
     /** Adds the functions and variables to the provided {@link Starscript} instance. */
     public static void init(Starscript ss) {
         // Variables
         ss.set("PI", Math.PI);
-        ss.set("time", () -> Value.string(timeFormat.format(new Date())));
-        ss.set("date", () -> Value.string(dateFormat.format(new Date())));
+        ss.set("time", () -> Value.string(TIME_FORMAT.format(LocalTime.now())));
+        ss.set("date", () -> Value.string(DATE_FORMAT.format(LocalDate.now())));
 
         // Numbers
         ss.set("round", StandardLib::round);
@@ -40,39 +41,28 @@ public class StandardLib {
     // Numbers
 
     public static Value round(Starscript ss, int argCount) {
-        if (argCount == 1) {
-            double a = ss.popNumber("Argument to round() needs to be a number.");
-            return Value.number(Math.round(a));
-        }
-        else if (argCount == 2) {
-            double b = ss.popNumber("Second argument to round() needs to be a number.");
-            double a = ss.popNumber("First argument to round() needs to be a number.");
-
-            double x = Math.pow(10, (int) b);
-            return Value.number(Math.round(a * x) / x);
-        }
-        else {
-            ss.error("round() requires 1 or 2 arguments, got %d.", argCount);
-            return null;
-        }
+        return Value.number(roundArgs(ss, argCount, "round"));
     }
 
     public static Value roundToString(Starscript ss, int argCount) {
-        if (argCount == 1) {
-            double a = ss.popNumber("Argument to round() needs to be a number.");
-            return Value.string(Double.toString(Math.round(a)));
-        }
-        else if (argCount == 2) {
-            double b = ss.popNumber("Second argument to round() needs to be a number.");
-            double a = ss.popNumber("First argument to round() needs to be a number.");
+        return Value.string(Value.number(roundArgs(ss, argCount, "roundToString")).toString());
+    }
 
-            double x = Math.pow(10, (int) b);
-            return Value.string(Double.toString(Math.round(a * x) / x));
-        }
-        else {
-            ss.error("round() requires 1 or 2 arguments, got %d.", argCount);
-            return null;
-        }
+    private static double roundArgs(Starscript ss, int argCount, String name) {
+        return switch (argCount) {
+            case 1 -> Math.round(ss.popNumber("Argument to " + name + "() needs to be a number."));
+            case 2 -> {
+                double b = ss.popNumber("Second argument to " + name + "() needs to be a number.");
+                double a = ss.popNumber("First argument to " + name + "() needs to be a number.");
+
+                double x = Math.pow(10, (int) b);
+                yield Math.round(a * x) / x;
+            }
+            default -> {
+                ss.error("%s() requires 1 or 2 arguments, got %d.", name, argCount);
+                yield 0;
+            }
+        };
     }
 
     public static Value floor(Starscript ss, int argCount) {
@@ -126,7 +116,7 @@ public class StandardLib {
     }
 
     public static Value contains(Starscript ss, int argCount) {
-        if (argCount != 2) ss.error("replace() requires 2 arguments, got %d.", argCount);
+        if (argCount != 2) ss.error("contains() requires 2 arguments, got %d.", argCount);
 
         String search = ss.popString("Second argument to contains() needs to be a string.");
         String string = ss.popString("First argument to contains() needs to be a string.");

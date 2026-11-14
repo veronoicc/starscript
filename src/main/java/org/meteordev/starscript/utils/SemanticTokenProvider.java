@@ -1,12 +1,12 @@
 package org.meteordev.starscript.utils;
 
+import lombok.RequiredArgsConstructor;
 import org.meteordev.starscript.compiler.Expr;
 import org.meteordev.starscript.compiler.Lexer;
 import org.meteordev.starscript.compiler.Parser;
 import org.meteordev.starscript.compiler.Token;
 
 import java.util.Comparator;
-import java.util.Iterator;
 import java.util.List;
 
 /** Provides a list of {@link SemanticToken}s for a given Starscript source input. The main use case for semantic tokens is syntax highlighting. */
@@ -20,70 +20,22 @@ public class SemanticTokenProvider {
 
         lexer.next();
         while (lexer.token != Token.EOF) {
-            switch (lexer.token) {
-                case Dot:
-                    tokens.add(new SemanticToken(SemanticTokenType.Dot, lexer.start, lexer.current));
-                    break;
+            SemanticTokenType type = switch (lexer.token) {
+                case Dot -> SemanticTokenType.Dot;
+                case Comma -> SemanticTokenType.Comma;
+                case EqualEqual, BangEqual, Greater, GreaterEqual, Less, LessEqual, Plus, Minus, Star, Slash, Percentage,
+                     UpArrow, Bang, QuestionMark, Colon, Ampersand, VBar, DoubleUpArrow, DoubleLess, DoubleGreater,
+                     TripleGreater, Tilde -> SemanticTokenType.Operator;
+                case String -> lexer.isInExpression() ? SemanticTokenType.String : null;
+                case Number -> SemanticTokenType.Number;
+                case Null, True, False, And, Or -> SemanticTokenType.Keyword;
+                case LeftParen, RightParen -> SemanticTokenType.Paren;
+                case LeftBrace, RightBrace -> SemanticTokenType.Brace;
+                case Section -> SemanticTokenType.Section;
+                default -> null;
+            };
 
-                case Comma:
-                    tokens.add(new SemanticToken(SemanticTokenType.Comma, lexer.start, lexer.current));
-                    break;
-
-                case EqualEqual:
-                case BangEqual:
-                case Greater:
-                case GreaterEqual:
-                case Less:
-                case LessEqual:
-                case Plus:
-                case Minus:
-                case Star:
-                case Slash:
-                case Percentage:
-                case UpArrow:
-                case Bang:
-                case QuestionMark:
-                case Colon:
-                case Ampersand:
-                case VBar:
-                case DoubleUpArrow:
-                case DoubleLess:
-                case DoubleGreater:
-                case TripleGreater:
-                case Tilde:
-                    tokens.add(new SemanticToken(SemanticTokenType.Operator, lexer.start, lexer.current));
-                    break;
-
-                case String:
-                    if (lexer.isInExpression()) tokens.add(new SemanticToken(SemanticTokenType.String, lexer.start, lexer.current));
-                    break;
-
-                case Number:
-                    tokens.add(new SemanticToken(SemanticTokenType.Number, lexer.start, lexer.current));
-                    break;
-
-                case Null:
-                case True:
-                case False:
-                case And:
-                case Or:
-                    tokens.add(new SemanticToken(SemanticTokenType.Keyword, lexer.start, lexer.current));
-                    break;
-
-                case LeftParen:
-                case RightParen:
-                    tokens.add(new SemanticToken(SemanticTokenType.Paren, lexer.start, lexer.current));
-                    break;
-
-                case LeftBrace:
-                case RightBrace:
-                    tokens.add(new SemanticToken(SemanticTokenType.Brace, lexer.start, lexer.current));
-                    break;
-
-                case Section:
-                    tokens.add(new SemanticToken(SemanticTokenType.Section, lexer.start, lexer.current));
-                    break;
-            }
+            if (type != null) tokens.add(new SemanticToken(type, lexer.start, lexer.current));
 
             lexer.next();
         }
@@ -92,33 +44,38 @@ public class SemanticTokenProvider {
         Parser.Result result = Parser.parse(source);
 
         if (result.hasErrors()) {
-            Error error = result.errors.get(0);
+            int errorOffset = offsetOf(source, result.errors.getFirst());
 
             // Remove tokens at the same position or after the error
-            // noinspection Java8CollectionRemoveIf
-            for (Iterator<SemanticToken> it = tokens.iterator(); it.hasNext();) {
-                SemanticToken token = it.next();
-
-                if (token.end > error.character) it.remove();
-            }
+            tokens.removeIf(token -> token.end() > errorOffset);
 
             // Add the error token starting at the error position going to the end of the source
-            tokens.add(new SemanticToken(SemanticTokenType.Error, error.character, source.length()));
+            tokens.add(new SemanticToken(SemanticTokenType.Error, errorOffset, source.length()));
         }
         else {
             result.accept(new Visitor(tokens));
         }
 
         // Sort tokens
-        tokens.sort(Comparator.comparingInt(token -> token.start));
+        tokens.sort(Comparator.comparingInt(SemanticToken::start));
     }
 
+    /** Converts the line and column of an error to an offset into the source. */
+    private static int offsetOf(String source, Error error) {
+        int lineStart = 0;
+
+        for (int line = 1; line < error.line; line++) {
+            int newline = source.indexOf('\n', lineStart);
+            if (newline < 0) break;
+            lineStart = newline + 1;
+        }
+
+        return Math.min(lineStart + error.character, source.length());
+    }
+
+    @RequiredArgsConstructor
     private static class Visitor extends AbstractExprVisitor {
         private final List<SemanticToken> tokens;
-
-        public Visitor(List<SemanticToken> tokens) {
-            this.tokens = tokens;
-        }
 
         @Override
         public void visitVariable(Expr.Variable expr) {
@@ -131,12 +88,10 @@ public class SemanticTokenProvider {
 
         @Override
         public void visitGet(Expr.Get expr) {
-            if (expr.getObject() instanceof Expr.Variable) {
-                Expr.Variable varExpr = (Expr.Variable) expr.getObject();
+            if (expr.getObject() instanceof Expr.Variable varExpr) {
                 tokens.add(new SemanticToken(SemanticTokenType.Map, varExpr.start, varExpr.end));
             }
-            else if (expr.getObject() instanceof Expr.Get) {
-                Expr.Get getExpr = (Expr.Get) expr.getObject();
+            else if (expr.getObject() instanceof Expr.Get getExpr) {
                 tokens.add(new SemanticToken(SemanticTokenType.Map, getExpr.end - getExpr.name.length(), getExpr.end));
             }
 

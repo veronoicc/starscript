@@ -3,10 +3,11 @@ package org.meteordev.starscript.compiler;
 import org.meteordev.starscript.utils.Error;
 
 import java.util.*;
+import java.util.function.Supplier;
 
 /** Parser that produces AST (abstract syntax tree) from starscript code and reports errors. */
 public class Parser {
-    public static final Set<String> KEYWORDS = Collections.unmodifiableSet(new HashSet<>(Arrays.asList("null", "true", "false", "and", "or")));
+    public static final Set<String> KEYWORDS = Set.of("null", "true", "false", "and", "or");
 
     private final Lexer lexer;
 
@@ -49,11 +50,14 @@ public class Parser {
 
             int start = previous.start;
 
-            int index = Integer.parseInt(previous.lexeme);
+            String digits = previous.lexeme.replaceFirst("^0+(?=.)", "");
+            boolean tooLarge = digits.length() > 3 || Integer.parseInt(digits) > 255;
+            int index = tooLarge ? 0 : Integer.parseInt(digits);
+
             Expr expr = expression();
             expr = new Expr.Section(start, previous.end, index, expr);
 
-            if (index > 255) error("Section index cannot be larger than 255.", expr);
+            if (tooLarge) error("Section index cannot be larger than 255.", expr);
             return expr;
         }
 
@@ -68,10 +72,9 @@ public class Parser {
 
     private Expr conditional() {
         int start = previous.start;
-        Expr expr = and();
+        Expr expr = or();
 
         if (match(Token.QuestionMark)) {
-
             Expr trueExpr = statement();
             consume(Token.Colon, "Expected ':' after first part of condition.", expr);
             Expr falseExpr = statement();
@@ -81,95 +84,44 @@ public class Parser {
         return expr;
     }
 
-    private Expr and() {
-        Expr expr = or();
-
-        while (match(Token.And)) {
-            int start = previous.start;
-
-            Expr right = or();
-            expr = new Expr.Logical(start, previous.end, expr, Token.And, right);
-        }
-
-        return expr;
+    private Expr or() {
+        return logical(this::and, Token.Or);
     }
 
-    private Expr or() {
-        Expr expr = equality();
-
-        while (match(Token.Or)) {
-            int start = previous.start;
-
-            Expr right = equality();
-            expr = new Expr.Logical(start, previous.end, expr, Token.Or, right);
-        }
-
-        return expr;
+    private Expr and() {
+        return logical(this::equality, Token.And);
     }
 
     private Expr equality() {
-        int start = previous.start;
-        Expr expr = comparison();
-
-        while (match(Token.EqualEqual, Token.BangEqual)) {
-            Token op = previous.token;
-            Expr right = comparison();
-            expr = new Expr.Binary(start, previous.end, expr, op, right);
-        }
-
-        return expr;
+        return binary(this::comparison, Token.EqualEqual, Token.BangEqual);
     }
 
     private Expr comparison() {
-        int start = previous.start;
-        Expr expr = term();
+        return binary(this::bitOr, Token.Greater, Token.GreaterEqual, Token.Less, Token.LessEqual);
+    }
 
-        while (match(Token.Greater, Token.GreaterEqual, Token.Less, Token.LessEqual)) {
-            Token op = previous.token;
-            Expr right = term();
-            expr = new Expr.Binary(start, previous.end, expr, op, right);
-        }
+    private Expr bitOr() {
+        return binary(this::bitXor, Token.VBar);
+    }
 
-        return expr;
+    private Expr bitXor() {
+        return binary(this::bitAnd, Token.DoubleUpArrow);
+    }
+
+    private Expr bitAnd() {
+        return binary(this::shift, Token.Ampersand);
+    }
+
+    private Expr shift() {
+        return binary(this::term, Token.DoubleLess, Token.DoubleGreater, Token.TripleGreater);
     }
 
     private Expr term() {
-        int start = previous.start;
-        Expr expr = factor();
-
-        while (match(Token.Plus, Token.Minus)) {
-            Token op = previous.token;
-            Expr right = factor();
-            expr = new Expr.Binary(start, previous.end, expr, op, right);
-        }
-
-        return expr;
+        return binary(this::factor, Token.Plus, Token.Minus);
     }
 
     private Expr factor() {
-        int start = previous.start;
-        Expr expr = bitwise();
-
-        while (match(Token.Star, Token.Slash, Token.Percentage, Token.UpArrow)) {
-            Token op = previous.token;
-            Expr right = bitwise();
-            expr = new Expr.Binary(start, previous.end, expr, op, right);
-        }
-
-        return expr;
-    }
-
-    private Expr bitwise() {
-        int start = previous.start;
-        Expr expr = unary();
-
-        while (match(Token.Ampersand, Token.VBar, Token.DoubleUpArrow, Token.DoubleLess, Token.DoubleGreater, Token.TripleGreater)) {
-            Token op = previous.token;
-            Expr right = unary();
-            expr = new Expr.Binary(start, previous.end, expr, op, right);
-        }
-
-        return expr;
+        return binary(this::unary, Token.Star, Token.Slash, Token.Percentage);
     }
 
     private Expr unary() {
@@ -181,7 +133,46 @@ public class Parser {
             return new Expr.Unary(start, previous.end, op, right);
         }
 
-        return call();
+        return power();
+    }
+
+    /** Right-associative; the right operand is a unary expression, so {@code 2^-1} works and {@code -2^2} is {@code -(2^2)}. */
+    private Expr power() {
+        int start = previous.start;
+        Expr expr = call();
+
+        if (match(Token.UpArrow)) {
+            Expr right = unary();
+            expr = new Expr.Binary(start, previous.end, expr, Token.UpArrow, right);
+        }
+
+        return expr;
+    }
+
+    private Expr binary(Supplier<Expr> operand, Token... ops) {
+        int start = previous.start;
+        Expr expr = operand.get();
+
+        while (match(ops)) {
+            Token op = previous.token;
+            Expr right = operand.get();
+            expr = new Expr.Binary(start, previous.end, expr, op, right);
+        }
+
+        return expr;
+    }
+
+    private Expr logical(Supplier<Expr> operand, Token opToken) {
+        Expr expr = operand.get();
+
+        while (match(opToken)) {
+            int start = previous.start;
+
+            Expr right = operand.get();
+            expr = new Expr.Logical(start, previous.end, expr, opToken, right);
+        }
+
+        return expr;
     }
 
     private Expr call() {
@@ -218,6 +209,7 @@ public class Parser {
         }
 
         Expr expr = new Expr.Call(callee.start, previous.end, callee, args);
+        if (args.size() > 255) error("Cannot have more than 255 arguments.", expr);
         consume(Token.RightParen, "Expected ')' after function arguments.", expr);
         return expr;
     }

@@ -11,10 +11,8 @@ public class Compiler implements Expr.Visitor {
 
     private int blockDepth;
 
-    private boolean constantAppend;
-    private boolean variableAppend;
-    private boolean getAppend;
-    private boolean callAppend;
+    /** The direct child expression of the block being compiled, which may use a fused {@code *Append} instruction. */
+    private Expr appendTarget;
 
     private Compiler() {}
 
@@ -37,7 +35,7 @@ public class Compiler implements Expr.Visitor {
 
     @Override
     public void visitString(Expr.String expr) {
-        script.write((blockDepth == 0 || constantAppend) ? Instruction.ConstantAppend : Instruction.Constant, Value.string(expr.string));
+        script.write((blockDepth == 0 || expr == appendTarget) ? Instruction.ConstantAppend : Instruction.Constant, Value.string(expr.string));
     }
 
     @Override
@@ -52,24 +50,18 @@ public class Compiler implements Expr.Visitor {
 
     @Override
     public void visitBlock(Expr.Block expr) {
+        Expr child = expr.getExpr();
+        boolean fused = child instanceof Expr.String || child instanceof Expr.Variable || child instanceof Expr.Get || child instanceof Expr.Call;
+
+        Expr prevAppendTarget = appendTarget;
         blockDepth++;
+        appendTarget = fused ? child : null;
 
-        if (expr.getExpr() instanceof Expr.String) constantAppend = true;
-        else if (expr.getExpr() instanceof Expr.Variable) variableAppend = true;
-        else if (expr.getExpr() instanceof Expr.Get) getAppend = true;
-        else if (expr.getExpr() instanceof Expr.Call) callAppend = true;
-
-        compile(expr.getExpr());
-
-        if (!constantAppend && !variableAppend && !getAppend && !callAppend) script.write(Instruction.Append);
-        else {
-            constantAppend = false;
-            variableAppend = false;
-            getAppend = false;
-            callAppend = false;
-        }
+        compile(child);
+        if (!fused) script.write(Instruction.Append);
 
         blockDepth--;
+        appendTarget = prevAppendTarget;
     }
 
     @Override
@@ -81,77 +73,84 @@ public class Compiler implements Expr.Visitor {
     public void visitBinary(Expr.Binary expr) {
         compile(expr.getLeft());
 
-        if (expr.op == Token.Plus && (expr.getRight() instanceof Expr.String || expr.getRight() instanceof Expr.Number)) {
-            script.write(Instruction.AddConstant, expr.getRight() instanceof Expr.String ? Value.string(((Expr.String) expr.getRight()).string) : Value.number(((Expr.Number) expr.getRight()).number));
-            return;
+        if (expr.op == Token.Plus) {
+            Value constant = switch (expr.getRight()) {
+                case Expr.String s -> Value.string(s.string);
+                case Expr.Number n -> Value.number(n.number);
+                default -> null;
+            };
+
+            if (constant != null) {
+                script.write(Instruction.AddConstant, constant);
+                return;
+            }
         }
-        else compile(expr.getRight());
 
-        switch (expr.op) {
-            case Plus:          script.write(Instruction.Add); break;
-            case Minus:         script.write(Instruction.Subtract); break;
-            case Star:          script.write(Instruction.Multiply); break;
-            case Slash:         script.write(Instruction.Divide); break;
-            case Percentage:    script.write(Instruction.Modulo); break;
-            case UpArrow:       script.write(Instruction.Power); break;
+        compile(expr.getRight());
 
-            case EqualEqual:    script.write(Instruction.Equals); break;
-            case BangEqual:     script.write(Instruction.NotEquals); break;
-            case Greater:       script.write(Instruction.Greater); break;
-            case GreaterEqual:  script.write(Instruction.GreaterEqual); break;
-            case Less:          script.write(Instruction.Less); break;
-            case LessEqual:     script.write(Instruction.LessEqual); break;
+        script.write(switch (expr.op) {
+            case Plus -> Instruction.Add;
+            case Minus -> Instruction.Subtract;
+            case Star -> Instruction.Multiply;
+            case Slash -> Instruction.Divide;
+            case Percentage -> Instruction.Modulo;
+            case UpArrow -> Instruction.Power;
 
-            case Ampersand:     script.write(Instruction.BitwiseAnd); break;
-            case VBar:          script.write(Instruction.BitwiseOr); break;
-            case DoubleUpArrow: script.write(Instruction.BitwiseXor); break;
-            case DoubleLess:    script.write(Instruction.LeftShift); break;
-            case DoubleGreater: script.write(Instruction.RightShift); break;
-            case TripleGreater: script.write(Instruction.UnsignedRightShift); break;
-        }
+            case EqualEqual -> Instruction.Equals;
+            case BangEqual -> Instruction.NotEquals;
+            case Greater -> Instruction.Greater;
+            case GreaterEqual -> Instruction.GreaterEqual;
+            case Less -> Instruction.Less;
+            case LessEqual -> Instruction.LessEqual;
+
+            case Ampersand -> Instruction.BitwiseAnd;
+            case VBar -> Instruction.BitwiseOr;
+            case DoubleUpArrow -> Instruction.BitwiseXor;
+            case DoubleLess -> Instruction.LeftShift;
+            case DoubleGreater -> Instruction.RightShift;
+            case TripleGreater -> Instruction.UnsignedRightShift;
+
+            default -> throw new IllegalStateException("Unexpected binary operator " + expr.op);
+        });
     }
 
     @Override
     public void visitUnary(Expr.Unary expr) {
         compile(expr.getRight());
 
-        if (expr.op == Token.Bang) script.write(Instruction.Not);
-        else if (expr.op == Token.Minus) script.write(Instruction.Negate);
-        else if (expr.op == Token.Tilde) script.write(Instruction.BitwiseNot);
+        script.write(switch (expr.op) {
+            case Bang -> Instruction.Not;
+            case Minus -> Instruction.Negate;
+            case Tilde -> Instruction.BitwiseNot;
+            default -> throw new IllegalStateException("Unexpected unary operator " + expr.op);
+        });
     }
 
     @Override
     public void visitVariable(Expr.Variable expr) {
-        script.write(variableAppend ? Instruction.VariableAppend : Instruction.Variable, Value.string(expr.name));
+        script.write(expr == appendTarget ? Instruction.VariableAppend : Instruction.Variable, Value.string(expr.name));
     }
 
     @Override
     public void visitGet(Expr.Get expr) {
-        boolean prevGetAppend = getAppend;
-        getAppend = false;
+        boolean append = expr == appendTarget;
 
-        boolean variableGet = expr.getObject() instanceof Expr.Variable;
-        if (!variableGet) compile(expr.getObject());
-
-        getAppend = prevGetAppend;
-
-        if (variableGet) {
-            script.write(getAppend ? Instruction.VariableGetAppend : Instruction.VariableGet, Value.string(((Expr.Variable) expr.getObject()).name));
+        if (expr.getObject() instanceof Expr.Variable variable) {
+            script.write(append ? Instruction.VariableGetAppend : Instruction.VariableGet, Value.string(variable.name));
             script.writeConstant(Value.string(expr.name));
         }
-        else script.write(getAppend ? Instruction.GetAppend : Instruction.Get, Value.string(expr.name));
+        else {
+            compile(expr.getObject());
+            script.write(append ? Instruction.GetAppend : Instruction.Get, Value.string(expr.name));
+        }
     }
 
     @Override
     public void visitCall(Expr.Call expr) {
-        boolean prevCallAppend = callAppend;
         compile(expr.getCallee());
-
-        callAppend = false;
         for (int i = 0; i < expr.getArgCount(); i++) compile(expr.getArg(i));
 
-        callAppend = prevCallAppend;
-        script.write(callAppend ? Instruction.CallAppend : Instruction.Call, expr.getArgCount());
+        script.write(expr == appendTarget ? Instruction.CallAppend : Instruction.Call, expr.getArgCount());
     }
 
     @Override

@@ -4,7 +4,6 @@ import org.meteordev.starscript.compiler.Parser;
 import org.meteordev.starscript.utils.SFunction;
 import org.meteordev.starscript.utils.StarscriptError;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -27,27 +26,20 @@ public class ValueMap {
             // Split name based on the dot
             String name1 = name.substring(0, dotI);
             String name2 = name.substring(dotI + 1);
+            checkName(name1);
 
-            // Get the map
-            ValueMap map;
-            Supplier<Value> valueSupplier = getRaw(name1);
-
-            if (valueSupplier == null) {
-                map = new ValueMap();
-                setRaw(name1, () -> Value.map(map));
-            }
-            else {
-                Value value = valueSupplier.get();
-
-                if (value.isMap()) map = value.getMap();
-                else {
-                    map = new ValueMap();
-                    setRaw(name1, () -> Value.map(map));
+            ValueMap[] child = new ValueMap[1];
+            values.compute(name1, (k, existing) -> {
+                if (existing != null && existing.get() instanceof Value v && v.isMap()) {
+                    child[0] = v.getMap();
+                    return existing;
                 }
-            }
 
-            // Set the supplier
-            map.set(name2, supplier);
+                Value created = Value.map(child[0] = new ValueMap());
+                return () -> created;
+            });
+
+            child[0].set(name2, supplier);
         }
         else setRaw(name, supplier);
 
@@ -126,10 +118,7 @@ public class ValueMap {
 
     /** Sets the variable supplier for the provided name. */
     public Supplier<Value> setRaw(String name, Supplier<Value> supplier) {
-        if (Parser.KEYWORDS.contains(name)) {
-            throw new StarscriptError("Variable name cannot be a keyword.");
-        }
-
+        checkName(name);
         return values.put(name, supplier);
     }
 
@@ -173,5 +162,11 @@ public class ValueMap {
             }
         }
         else return removeRaw(name);
+    }
+
+    private static void checkName(String name) {
+        if (Parser.KEYWORDS.contains(name)) {
+            throw new StarscriptError("Variable name cannot be a keyword.");
+        }
     }
 }

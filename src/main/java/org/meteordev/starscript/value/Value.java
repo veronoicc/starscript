@@ -2,200 +2,176 @@ package org.meteordev.starscript.value;
 
 import org.meteordev.starscript.utils.SFunction;
 
+import java.util.Objects;
 import java.util.function.Supplier;
 
-/** Class that holds any starscript value. */
-public class Value {
-    private static final Value NULL = new Value(ValueType.Null);
-    private static final Value TRUE = new Boolean(true);
-    private static final Value FALSE = new Boolean(false);
-
-    public final ValueType type;
-
-    private Value(ValueType type) {
-        this.type = type;
+/** Any starscript value. */
+public sealed interface Value {
+    static Value null_() {
+        return VNull.INSTANCE;
     }
-
-    public static Value null_() {
-        return NULL;
+    static Value bool(boolean bool) {
+        return bool ? VBool.TRUE : VBool.FALSE;
     }
-    public static Value bool(boolean bool) {
-        return bool ? TRUE : FALSE;
+    static Value number(double number) {
+        return new VNumber(number);
     }
-    public static Value number(double number) {
-        return new Number(number);
-    }
-    public static Value string(String string) {
+    static Value string(String string) {
         return new VString(string);
     }
-    public static Value function(SFunction function) {
-        return new Function(function);
+    static Value function(SFunction function) {
+        return new VFunction(function);
     }
-    public static Value map(ValueMap fields) {
-        return new Map(fields);
+    static Value map(ValueMap fields) {
+        return new VMap(fields);
     }
-    public static Value object(java.lang.Object object) {
-        return new Object(object);
-    }
-
-    public boolean isNull() {
-        return type == ValueType.Null;
-    }
-    public boolean isBool() {
-        return type == ValueType.Boolean;
-    }
-    public boolean isNumber() {
-        return type == ValueType.Number;
-    }
-    public boolean isString() {
-        return type == ValueType.String;
-    }
-    public boolean isFunction() {
-        return type == ValueType.Function;
-    }
-    public boolean isMap() {
-        return type == ValueType.Map;
-    }
-    public boolean isObject() {
-        return type == ValueType.Object;
+    /** Wraps an arbitrary object, a {@code null} object becomes {@link #null_()}. */
+    static Value object(Object object) {
+        return object == null ? VNull.INSTANCE : new VObject(object);
     }
 
-    public boolean getBool() {
-        return ((Boolean) this).bool;
+    ValueType type();
+
+    default boolean isNull() {
+        return type() == ValueType.Null;
     }
-    public double getNumber() {
-        return ((Number) this).number;
+    default boolean isBool() {
+        return type() == ValueType.Boolean;
     }
-    public String getString() {
-        return ((VString) this).string;
+    default boolean isNumber() {
+        return type() == ValueType.Number;
     }
-    public SFunction getFunction() {
-        return ((Function) this).function;
+    default boolean isString() {
+        return type() == ValueType.String;
     }
-    public ValueMap getMap() {
-        return ((Map) this).fields;
+    default boolean isFunction() {
+        return type() == ValueType.Function;
     }
-    public java.lang.Object getObject() {
-        return ((Object) this).object;
+    default boolean isMap() {
+        return type() == ValueType.Map;
+    }
+    default boolean isObject() {
+        return type() == ValueType.Object;
     }
 
-    public boolean isTruthy() {
-        switch (type) {
-            default:
-            case Null:     return false;
-            case Boolean:  return getBool();
-            case Number:
-            case String:
-            case Function:
-            case Map:
-            case Object:   return true;
+    default boolean getBool() {
+        return ((VBool) this).value;
+    }
+    default double getNumber() {
+        return ((VNumber) this).value;
+    }
+    default String getString() {
+        return ((VString) this).value;
+    }
+    default SFunction getFunction() {
+        return ((VFunction) this).value;
+    }
+    default ValueMap getMap() {
+        return ((VMap) this).value;
+    }
+    default Object getObject() {
+        return ((VObject) this).value;
+    }
+
+    default boolean isTruthy() {
+        return !(this instanceof VNull) && (!(this instanceof VBool b) || b.value);
+    }
+
+    /** Whole numbers within long range print without a decimal point. */
+    private static String formatNumber(double n) {
+        if (n % 1 == 0 && n >= -0x1p63 && n < 0x1p63) return Long.toString((long) n);
+        return Double.toString(n);
+    }
+
+    final class VNull implements Value {
+        private static final VNull INSTANCE = new VNull();
+
+        private VNull() {}
+
+        @Override public ValueType type() { return ValueType.Null; }
+        @Override public boolean equals(Object o) { return o instanceof VNull; }
+        @Override public int hashCode() { return 0; }
+        @Override public String toString() { return "null"; }
+    }
+
+    record VBool(boolean value) implements Value {
+        private static final VBool TRUE = new VBool(true);
+        private static final VBool FALSE = new VBool(false);
+
+        @Override public ValueType type() { return ValueType.Boolean; }
+        @Override public String toString() { return value ? "true" : "false"; }
+    }
+
+    record VNumber(double value) implements Value {
+        @Override public ValueType type() { return ValueType.Number; }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof VNumber n && value == n.value;
+        }
+
+        @Override
+        public int hashCode() {
+            return value == 0 ? 0 : Double.hashCode(value);
+        }
+
+        @Override public String toString() { return formatNumber(value); }
+    }
+
+    record VString(String value) implements Value {
+        @Override public ValueType type() { return ValueType.String; }
+        @Override public String toString() { return value; }
+    }
+
+    record VFunction(SFunction value) implements Value {
+        @Override public ValueType type() { return ValueType.Function; }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof VFunction f && value == f.value;
+        }
+
+        @Override
+        public int hashCode() {
+            return System.identityHashCode(value);
+        }
+
+        @Override public String toString() { return "<function>"; }
+    }
+
+    record VMap(ValueMap value) implements Value {
+        @Override public ValueType type() { return ValueType.Map; }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof VMap m && value == m.value;
+        }
+
+        @Override
+        public int hashCode() {
+            return System.identityHashCode(value);
+        }
+
+        @Override
+        public String toString() {
+            Supplier<Value> s = value.getRaw("_toString");
+            return s == null ? "<map>" : s.get().toString();
         }
     }
 
-    @Override
-    public boolean equals(java.lang.Object o) {
-        if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+    record VObject(Object value) implements Value {
+        @Override public ValueType type() { return ValueType.Object; }
 
-        Value value = (Value) o;
-        if (type != value.type) return false;
-
-        switch (type) {
-            case Null:     return true;
-            case Boolean:  return getBool() == value.getBool();
-            case Number:   return getNumber() == value.getNumber();
-            case String:   return getString().equals(value.getString());
-            case Function: return getFunction() == value.getFunction();
-            case Map:      return getMap() == value.getMap();
-            case Object:   return getObject().equals(value.getObject());
-            default:       return false;
-        }
-    }
-
-    @Override
-    public int hashCode() {
-        int result = 31 * super.hashCode();
-
-        switch (type) {
-            case Boolean:  result += java.lang.Boolean.hashCode(getBool()); break;
-            case Number:   result += Double.hashCode(getNumber()); break;
-            case String:   result += getString().hashCode(); break;
-            case Function: result += getFunction().hashCode(); break;
-            case Map:      result += getMap().hashCode(); break;
-            case Object:   result += getObject().hashCode(); break;
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof VObject v && Objects.equals(value, v.value);
         }
 
-        return result;
-    }
-
-    @Override
-    public String toString() {
-        switch (type) {
-            case Null:     return "null";
-            case Boolean:  return getBool() ? "true" : "false";
-            case Number:   { double n = getNumber(); return n % 1 == 0 ? Integer.toString((int) n) : Double.toString(n); }
-            case String:   return getString();
-            case Function: return "<function>";
-            case Map: {
-                Supplier<Value> s = getMap().getRaw("_toString");
-                return s == null ? "<map>" : s.get().toString();
-            }
-            case Object:   return getObject().toString();
-            default:       return "";
+        @Override
+        public int hashCode() {
+            return Objects.hashCode(value);
         }
-    }
 
-    private static class Boolean extends Value {
-        private final boolean bool;
-
-        private Boolean(boolean bool) {
-            super(ValueType.Boolean);
-            this.bool = bool;
-        }
-    }
-
-    private static class Number extends Value {
-        private final double number;
-
-        private Number(double number) {
-            super(ValueType.Number);
-            this.number = number;
-        }
-    }
-
-    private static class VString extends Value {
-        private final String string;
-
-        private VString(String string) {
-            super(ValueType.String);
-            this.string = string;
-        }
-    }
-
-    private static class Function extends Value {
-        private final SFunction function;
-
-        public Function(SFunction function) {
-            super(ValueType.Function);
-            this.function = function;
-        }
-    }
-
-    private static class Map extends Value {
-        private final ValueMap fields;
-
-        public Map(ValueMap fields) {
-            super(ValueType.Map);
-            this.fields = fields;
-        }
-    }
-
-    private static class Object extends Value {
-        private final java.lang.Object object;
-
-        public Object(java.lang.Object object) {
-            super(ValueType.Object);
-            this.object = object;
-        }
+        @Override public String toString() { return String.valueOf(value); }
     }
 }

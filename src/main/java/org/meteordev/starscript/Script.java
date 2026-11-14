@@ -1,10 +1,13 @@
 package org.meteordev.starscript;
 
+import org.meteordev.starscript.utils.StarscriptError;
 import org.meteordev.starscript.value.Value;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /** Compiled representation of starscript code that can be run inside {@link Starscript}. */
 public class Script {
@@ -12,6 +15,7 @@ public class Script {
     private int size;
 
     public final List<Value> constants = new ArrayList<>();
+    private final Map<Value, Integer> constantIndices = new HashMap<>();
 
     private void write(int b) {
         if (size >= code.length) {
@@ -40,23 +44,22 @@ public class Script {
         writeConstant(constant);
     }
 
-    /** Writes constant value to this script. */
+    /** Writes constant value to this script as an unsigned 16-bit index. Throws {@link StarscriptError} past 65536 distinct constants. */
     public void writeConstant(Value constant) {
-        int constantI = -1;
+        Integer existing = constantIndices.get(constant);
+        int index;
 
-        for (int i = 0; i < constants.size(); i++) {
-            if (constants.get(i).equals(constant)) {
-                constantI = i;
-                break;
-            }
-        }
+        if (existing != null) index = existing;
+        else {
+            index = constants.size();
+            if (index > 0xFFFF) throw new StarscriptError("Script has too many constants, the limit is 65536.");
 
-        if (constantI == -1) {
-            constantI = constants.size();
             constants.add(constant);
+            constantIndices.put(constant, index);
         }
 
-        write(constantI);
+        write(index >> 8);
+        write(index);
     }
 
     /** Begins a jump instruction. */
@@ -68,12 +71,13 @@ public class Script {
         return size - 2;
     }
 
-    /** Ends a jump instruction. */
+    /** Ends a jump instruction. Throws {@link StarscriptError} if the jump is longer than 65535 bytes. */
     public void patchJump(int offset) {
         int jump = size - offset - 2;
+        if (jump > 0xFFFF) throw new StarscriptError("Jump is too long, script is too large.");
 
-        code[offset] = (byte) ((jump >> 8) & 0xFF);
-        code[offset + 1] = (byte) (jump & 0xFF);
+        code[offset] = (byte) (jump >> 8);
+        code[offset + 1] = (byte) jump;
     }
 
     /** Returns the number of bytes inside {@link #code}. */
@@ -91,21 +95,28 @@ public class Script {
                 out.append(String.format("%3d %-18s", i, insn));
 
                 switch (insn) {
-                    case AddConstant:
-                    case Variable:
-                    case VariableAppend:
-                    case Get:
-                    case GetAppend:
-                    case Constant:
-                    case ConstantAppend:    i++; out.append(String.format("%3d '%s'", code[i], constants.get(code[i] & 0xFF))); break;
-                    case Call:
-                    case CallAppend:        i++; out.append(String.format("%3d %s", code[i], code[i] == 1 ? "argument" : "arguments")); break;
-                    case Jump:
-                    case JumpIfTrue:
-                    case JumpIfFalse:       i += 2; out.append(String.format("%3d -> %d", i - 2, i + 1 + (((code[i - 1] << 8) & 0xFF) | (code[i] & 0xFF)))); break;
-                    case Section:           i++; out.append(String.format("%3d", code[i])); break;
-                    case VariableGet:
-                    case VariableGetAppend: i += 2; out.append(String.format("%3d.%-3d '%s.%s'", code[i - 1], code[i], constants.get(code[i - 1] & 0xFF), constants.get(code[i] & 0xFF))); break;
+                    case AddConstant, Variable, VariableAppend, Get, GetAppend, Constant, ConstantAppend -> {
+                        int c = readU16(i + 1);
+                        i += 2;
+                        out.append(String.format("%3d '%s'", c, constants.get(c)));
+                    }
+                    case Call, CallAppend -> {
+                        int argCount = code[++i] & 0xFF;
+                        out.append(String.format("%3d %s", argCount, argCount == 1 ? "argument" : "arguments"));
+                    }
+                    case Jump, JumpIfTrue, JumpIfFalse -> {
+                        int jump = readU16(i + 1);
+                        i += 2;
+                        out.append(String.format("%3d -> %d", jump, i + 1 + jump));
+                    }
+                    case Section -> out.append(String.format("%3d", code[++i] & 0xFF));
+                    case VariableGet, VariableGetAppend -> {
+                        int a = readU16(i + 1);
+                        int b = readU16(i + 3);
+                        i += 4;
+                        out.append(String.format("%3d.%-3d '%s.%s'", a, b, constants.get(a), constants.get(b)));
+                    }
+                    default -> { }
                 }
 
                 out.append('\n');
@@ -113,6 +124,10 @@ public class Script {
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+    }
+
+    private int readU16(int i) {
+        return ((code[i] & 0xFF) << 8) | (code[i + 1] & 0xFF);
     }
 
     /** Decompiles this script and writes it to {@link System#out}. */
